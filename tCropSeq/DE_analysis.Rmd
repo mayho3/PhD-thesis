@@ -1,0 +1,95 @@
+---
+title: "Differential Expression Analysis"
+output: html_notebook
+---
+
+```{r}
+library(Libra)
+library(Seurat)
+```
+
+### Lollipop plot DEGs
+
+Script to produce **Fig1.f**
+
+```{r}
+E16_CCA_inhib <- readRDS("/datastore_share/Users/mayho/meis2_paper/seurat_objects/E16_CCA_inhib.rds")
+```
+
+```{r}
+DE = run_de(E16_CCA_inhib, cell_type_col = "CCA_Assignment", replicate_col = "orig.ident", label_col = "gRNA", de_family = "pseudobulk", de_method = "edgeR", de_type = "LRT")
+head(DE)
+```
+```{r}
+DE = run_de(E16_CCA_inhib, cell_type_col = "neuron_class", replicate_col = "orig.ident", label_col = "gRNA", de_family = "pseudobulk", de_method = "edgeR", de_type = "LRT")
+head(DE)
+```
+
+```{r}
+DE_filter  <- DE %>% mutate(avg_logFC = avg_logFC * -1) %>% filter(p_val_adj <= 0.05) 
+```
+
+Calculating total number of DEGs for each inhibitory cluster. 
+
+```{r}
+DEGs_clusters <- DE_filter %>% count(cell_type) %>% arrange(desc(n))
+celltype_num <- E16_CCA_inhib@meta.data %>% count(CCA_Assignment) %>% rename(cell_type = CCA_Assignment, num_cells = n)
+DEGs_clusters <- left_join(DEGs_clusters, celltype_num)
+DEGs_clusters$cell_type <-  forcats::fct_reorder(DEGs_clusters$cell_type, DEGs_clusters$n, .desc = TRUE)
+```
+
+```{r}
+p <- ggplot(DEGs_clusters, aes(cell_type, n))
+p + geom_segment(aes(xend=cell_type, y=0, yend=n)) +
+  geom_point(mapping = aes(size = num_cells, colour = cell_type)) + 
+ # scale_colour_brewer(palette = "Set3") + 
+  scale_colour_viridis_d() + 
+  scale_size_continuous("number of cells", range = c(2,10), breaks = c(500,1000,1500,2000,2500), labels = c("500", "1000", "1500", "2000", "2500")) +
+  labs(y = "# of DEGs", x = "Cell Type") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme_classic()
+# ggsave(filename = "/datastore_share/Users/mayho/crispr/results/DE/E16_DE_lollipop.pdf",  width = 8.00, height = 5.00, units = "in")
+```
+
+### Projection neuron volcano
+
+Script to produce **Fig1.g**
+
+```{r}
+DE = run_de(E16_CCA_inhib, cell_type_col = "neuron_class", replicate_col = "orig.ident", label_col = "gRNA", de_family = "pseudobulk", de_method = "edgeR", de_type = "LRT")
+head(DE)
+```
+
+```{r}
+DE_filter  <- DE %>% mutate(avg_logFC = avg_logFC * -1) %>% filter(cell_type == "projection neurons") 
+```
+
+```{r}
+proj_interest_genes <- c("Adora2a", "Gucy1a3", "Pax6", "Gucy1b3", "Arpp21", "Six3", "Nxph1",
+                         "Maf", "Sp8", "Tcf4", "Ngf", "Tox2", "Prox1", "Arx")
+mitotic_interest_genes <- c("Prox1os", "Akna", "Npas1", "Wnt5a", "Zfp703", "Tshz1", "Zic3" ,"Epha5", "Pdzrn3", "Nefm")
+v <- EnhancedVolcano(DE_filter, 
+                lab = DE_filter$gene,
+                x = 'avg_logFC', 
+                y = 'p_val_adj',
+                FCcutoff = 0.25,
+                pCutoff = 0.05,
+                title = "Mitotic",
+                xlim = c(-4,4),
+                ylim = c(0,28),
+                legendPosition = 'right',
+               drawConnectors = TRUE,
+               boxedLabels = TRUE,
+              # widthConnectors = 0.2,
+              #  col=c('black', 'black', 'black', 'red3'),
+                legendLabels=c('NS.','LogFC','p-value',"p-value and LogFC"),
+                selectLab = proj_interest_genes,
+                xlab = "logFC",
+               border = "full",
+                labSize = 3,
+                ylab = expression('FDR ajusted -log'["10"]*italic('P')))
+v
+ggsave(filename = "/datastore_share/Users/mayho/crispr/results/DE/E16_Meis2_proj.pdf",  width = 6.8, height = 6.18, units = "in")
+```
+
+

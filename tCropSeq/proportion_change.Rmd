@@ -1,0 +1,230 @@
+---
+title: "Proportion"
+output: html_notebook
+---
+
+## Plotting proportion change 
+
+Read in Seurat objects of E16 or P7 data. 
+Output Fig1.e
+
+```{r}
+library(data.table)
+```
+
+```{r}
+E16 <- readRDS("/datastore_share/Users/mayho/meis2_paper/seurat_objects/E16.rds")
+P7GE_sub <- readRDS("/datastore_share/Users/mayho/meis2_paper/seurat_objects/P7GE_sub.rds")
+E16_CCA_inhib <- readRDS("/datastore_share/Users/mayho/meis2_paper/seurat_objects/E16_CCA_inhib.rds")
+seur_obj <- E16
+gRNAs <- unique(seur_obj@meta.data$gRNA)
+inhibitory <- unique(seur_obj@meta.data$CCA_Assignment)
+```
+
+```{r}
+prop <- data.frame(class=character(), #initialize data frame 
+                   dataset = character(),
+                   value = numeric(),
+                   gRNA = character(),
+                   stringsAsFactors = FALSE)
+
+for (i in gRNAs){
+  guide_object <- subset(seur_obj, subset = gRNA == i)
+  data <- guide_object@meta.data[c("CCA_Assignment", "dataset", "gRNA")]
+  table(data$dataset, data$CCA_Assignment)
+  prop_table <- prop.table(table(data$CCA_Assignment, data$dataset), margin = 2) %>% reshape2::melt()
+  # prop_table <- prop_table[prop_table$Var1 %in% inhibitory,]
+  colnames(prop_table) <- c("class", "dataset", "value")
+  prop_table$gRNA <- rep(i, length(prop_table$dataset))
+  prop <- rbind(prop, prop_table)}
+head(prop)
+```
+
+```{r}
+lacZ_prop <- prop[prop$gRNA== "glacZ",]
+lacZ_prop 
+```
+
+```{r}
+lacZ_prop <- data.table(lacZ_prop)
+lacZ_prop[, Mean:=mean(value), by=class]
+head(lacZ_prop)
+```
+
+Average mean values of lacZ proportions
+
+```{r}
+lacZ_AvgProp <- data.frame(
+  clusters = unique(lacZ_prop$class),
+  mean_prop = unique(lacZ_prop$Mean),
+  stringsAsFactors = FALSE
+  )
+print(lacZ_AvgProp)
+```
+
+```{r}
+clusters <- unique(prop$class)
+prop_change_total <- data.frame(class=character(), #initialize data frame 
+                   dataset = character(),
+                   value = numeric(),
+                   gRNA = character(),
+                   prop_change = numeric(),
+                   stringsAsFactors = FALSE)
+
+for (i in clusters){
+  single_change <- prop[prop$class == i,]
+  single_change <- single_change %>% mutate(prop_change = single_change$value/lacZ_AvgProp[lacZ_AvgProp$clusters == i,]$mean_prop)
+  prop_change_total <- rbind(prop_change_total, single_change)
+  }
+prop_change_total <- filter(prop_change_total, value > 0)
+head(prop_change_total)
+```
+
+
+```{r}
+prop_change_total$category<- ifelse(prop_change_total$prop_change > 1, "high","low")
+prop_change_total <- prop_change_total %>%
+  dplyr::group_by(class,gRNA) %>%
+  dplyr::mutate(mean_prop_change = mean(prop_change, na.rm = TRUE))
+prop_change_total$category<- ifelse(prop_change_total$mean_prop_change < 1, "decrease","increase")
+```
+
+Filter prop change 
+
+```{r}
+unwanted_class <- c("Ependymal", "Unknown")
+prop_filter <- prop_change_total[!prop_change_total$class %in% unwanted_class,]
+prop_filter <- prop_filter[!prop_filter$gRNA %in% "glacZ", ] # remove lacZ
+```
+
+
+```{r}
+# refactor class level
+
+prop_filter$class <- factor(prop_filter$class, levels = c("Mitotic", "IN:Calb2/Nxph1", "IN:Nr2f2/Nnat", "IN:Tiam2/Zfp704", "IN:Nfib/Tcf4", "IN:Lhx6/Npy", "IN:Cck/Reln", "IN:Tshz1/Pbx1", "PN:Isl1/Meis2", "PN:Isl1/Bcl11b", "PN:Ebf1/Zfp503", "PN:Meis2/Bcl11b", "PN:Foxp1/Six3", "PN:Foxp1/Isl1"))
+
+
+ggplot(na.omit(prop_filter), aes(class, log(mean_prop_change))) +
+  geom_bar(aes(fill= category), position = "dodge", stat = "summary", fun = "mean") +
+ # geom_point(data = prop_change_total, aes(class, prop_change)) +
+ # geom_text(aes(label = dataset), size = 3) +
+  scale_fill_manual(values = c("#4393C3", "#D6604D")) +
+  coord_cartesian(ylim = c(-2,3)) +
+  expand_limits(y = 1) +
+  scale_y_continuous(breaks=seq(-3,3,by=1)) +
+  facet_wrap(~ gRNA, ncol = 1) + 
+   theme_bw() +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  ggtitle("Proportion change of perturbed clusters compared to control")
+ggsave(filename = "/datastore_share/Users/mayho/crispr/results/prop/E16_prop_bar_no_outlier.pdf", height = 3.70, width = 5.70, units = "in")
+```
+
+## Regression Analysis
+
+Outputs Fig. 6f
+
+Read in library. 
+```{r}
+library(datasets)
+library(foreign)
+library(MASS)
+library(broom)
+library(lmtest)
+```
+
+Function to calculate gRNA effect on cell composition. Taken from https://github.com/klarman-cell-observatory/ivPerturbSeq
+
+```{r}
+CellComp_Poisson<-function(seur, seur2, celltype="CellType",perturbations="perturbation",batch="batch",cutoff=10)
+{
+print("Clean Data")
+meta=seur@meta.data[,c(celltype,perturbations,batch)]
+meta2 =seur2@meta.data[c(perturbations, batch)]
+colnames(meta)=c("CellType","Pert","Batch")
+colnames(meta2)= c("Pert", "Batch")
+
+
+meta <- meta %>% group_by(CellType,Pert,Batch) %>% summarise(Num=length(CellType)) %>% as.data.frame()
+
+meta2<-meta %>% group_by(Pert,Batch) %>% summarise(Tot=sum(Num)) %>% as.data.frame()
+
+meta=left_join(meta,meta2)
+
+##so meta is dataframe of 5 columns: celltype, perturbation, batch, Number of total cells of that celltype/pert/batch, and number of total cells of that pert/batch
+
+meta=meta[meta[,"Tot"]>cutoff,]
+# meta = meta[, "Num" > 10]
+
+meta["Pert"]=relevel(factor(meta[,"Pert"]),ref="glacZ")
+
+lst=list()
+for(i in unique(meta[,"CellType"])){lst[[i]]=meta[meta[,"CellType"]==i,]}
+
+
+print("Fit model!")
+out<-lapply(lst,function(cur){
+celltype=cur[1,"CellType"]
+
+print(celltype)
+cur["logTot"]=log(cur[,"Tot"])
+fit <-glm(Num~offset(logTot)+Batch+Pert,data=cur,family=poisson())
+tab=summary(fit)
+tab=tab$coefficients
+tab=data.frame(tab)
+tab=tab[grep("Pert",rownames(tab)),]
+tab["Gene"]=sub("Pert","",rownames(tab))
+tab["CellType"]=celltype
+tab=tab[,c(5,6,4,1,2,3)]
+colnames(tab)[3]="pval"
+return(tab)
+})
+
+tab=do.call(rbind,out)
+
+rownames(tab)=NULL
+
+tab=tab[order(tab[,"pval"]),]
+
+tab["padj"]=p.adjust(tab[,"pval"],"fdr")
+
+print("Done!")
+
+return(tab)
+
+}
+
+
+```
+
+Calculate P7 proportion composition effect.
+
+```{r}
+P7_Poi <- CellComp_Poisson(seur =  P7GE_sub, seur2 = P7GE_sub, celltype = "level4", perturbations = "gRNA", batch = "dataset", cutoff = 10)
+```
+Calculate E16 proportion composition effect. 
+
+```{r}
+E16_Poi <- CellComp_Poisson(seur =  E16_CCA_inhib, seur2 = E16, celltype = "CCA_Assignment", perturbations = "gRNA", batch = "dataset", cutoff = 0)
+```
+
+```{r}
+E16_Poi$CellType <- factor(E16_Poi$CellType, levels = c("Mitotic", "IN:Calb2/Nxph1", "IN:Nr2f2/Nnat", "IN:Tiam2/Zfp704", "IN:Nfib/Tcf4", "IN:Lhx6/Npy", "IN:Cck/Reln", "IN:Tshz1/Pbx1", "PN:Isl1/Meis2", "PN:Isl1/Bcl11b", "PN:Ebf1/Zfp503", "PN:Meis2/Bcl11b", "PN:Foxp1/Six3", "PN:Foxp1/Isl1"))
+```
+
+```{r}
+poisson_df <- E16_Poi # or P7_Poit
+mod_plot <- ggplot(poisson_df) +
+  geom_point(mapping = aes(x = CellType, y = Gene, colour = Estimate, size = -log(padj))) +
+ # scale_colour_viridis_b() +  
+  scale_colour_gradient2(low = muted("blue"), high = muted("red")) +
+  scale_size_continuous("-log(Pvalue)", range = c(2,9), breaks = c(1,2,3,4), labels = c("1", "2", "3", ">4")) +
+  geom_point(mapping = aes(x = CellType, y = Gene, size = -log(padj)), shape = 21, colour = "black", stroke =  1, data = poisson_df[which(-log(poisson_df$padj)> 3),]) + 
+  labs(size = "-log(Pvalue)", colour = "Effect size") +
+  theme_bw() +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme(panel.grid.major = element_blank()) +
+  ggtitle("Perturbation effect on proportion compared to lacZ control") 
+mod_plot
+ggsave(filename = "/datastore_share/Users/mayho/crispr/results/prop/E16_prop_dot_scale_cutoff0.pdf", height = 4.20, width = 7.00, units = "in")
+```
+

@@ -1,0 +1,129 @@
+---
+title: "Lineage Analysis"
+output: html_notebook
+---
+
+### Clone size boxplot
+
+```{r}
+library(dplyr)
+```
+
+```{r}
+E16_lin_subset_clones <- na.omit(E16_lin_subset@meta.data[, c("gRNA", "cloneID")])
+clone_size_tot <- E16_lin_subset_clones %>% group_by(gRNA, cloneID) %>% summarise(clone_size= n())
+clone_size_remove <- clone_size_tot[clone_size_tot$clone_size == 1,]
+clone_size_tot <- clone_size_tot[!(clone_size_tot$cloneID %in% clone_size_remove$cloneID),]
+clone_size_tot <- clone_size_tot %>% ungroup() %>% group_by(gRNA, clone_size) %>% summarise(n = n())
+```
+
+
+```{r}
+clone_size_lacZ <- clone_size_tot[clone_size_tot$gRNA == "glacZ",]
+clone_size_meis2 <- clone_size_tot[clone_size_tot$gRNA == "gMeis2",]
+```
+
+Obtaining the mean and standard deviation for clone size
+
+```{r}
+clone_size_data <- data.frame(gRNA = c("gMeis2", "glacZ"),
+                              clone_size = c(mean(clone_size_meis2$clone_size), mean(clone_size_lacZ$clone_size)),
+                              sd = c(sd(clone_size_meis2$clone_size), sd(clone_size_lacZ$clone_size)))
+```
+
+Visualize result
+
+```{r}
+ggplot(clone_size_data) +
+  geom_bar( aes(x=gRNA, y=clone_size), stat="identity", alpha=0.7) +
+  geom_errorbar( aes(x=gRNA, ymin=clone_size-sd, ymax=clone_size+sd), width=0.1) + theme_classic()
+```
+
+
+```{r}
+library(readr)
+library(philentropy)
+library(dendextend)
+library(UpSetR)
+```
+
+# UpSet diagram
+
+Fig. 2f
+
+```{r}
+E16_lin_subset <- readRDS("/datastore_share/Users/mayho/meis2_paper/seurat_objects/E16_lin_subset.rds")
+```
+
+creating a merged dataframe of glacZ and geMeis2 clones. 
+
+```{r}
+merge_cloneseq <- data.frame(class=character(), #initialize data frame 
+                   dataset = character(),
+                   value = numeric(),
+                   gRNA = character(),
+                   stringsAsFactors = FALSE)
+
+gRNAs <- unique(E16_lin_subset@meta.data$gRNA)
+for (i in gRNAs){
+  seur_obj <- subset(E16_lin_subset, subset = gRNA == i)
+  pool <- FetchData(seur_obj,c("cloneID","neuron_class"))
+  pool <- pool[complete.cases(pool), ] # REMOVE everything that includes NA 
+  pool <- pool %>% ungroup() %>% group_by(cloneID) %>% filter(n() != 1) # Take everything that is not single clone
+  pool <- as.data.frame(pool)
+  cloneseq <- fromList(split(pool$cloneID, pool$neuron_class))
+  cloneseq$gRNA <- i
+  merge_cloneseq <- rbind(merge_cloneseq, cloneseq)
+}
+```
+
+visualize clonal intersection between mitotic, interneurons, and projection neurons. 
+
+```{r}
+library(ComplexUpset)
+rating_scale = scale_fill_manual(values=c( 'glacZ'='#377EB8', 'gMeis2'='#FF7F00'
+))
+
+show_hide_scale = scale_color_manual(values=c('show'='black', 'hide'='transparent'), guide='none')
+
+ComplexUpset::upset(
+    merge_cloneseq, c("mitotic", "projection neurons", "interneurons"), name='gRNA', width_ratio=0.3, min_size=10, min_degree = 1,
+    annotations =list(
+        'gRNA'=list(
+            aes=aes(x=intersection, fill=gRNA),
+            geom=list(
+                geom_bar(stat='count', position='fill', na.rm=TRUE),
+                geom_text(
+                    aes(
+                        label=!!aes_percentage(relative_to='group'),
+                        group=gRNA
+                    ),
+                    stat='count',
+                    position=position_fill(vjust = .5)
+                ),
+                scale_y_continuous(labels=scales::percent_format()),
+                show_hide_scale,
+                rating_scale
+            )
+        )
+    )
+)
+# ggsave(filename = "/datastore_share/Users/mayho/crispr/results/clones/E16_clones_Upset.pdf", width = 6.92, height = 4.71 , units = "in")
+
+```
+
+### Visualizing individual clones on UMAP
+
+UMAP visualization for clones: 114, 2910, 4132, 7744
+
+```{r}
+clonesviz <- c(114, 2910, 4132, 7744)
+for(i in clonesviz){
+  DimPlot(Eminence.combined.sct,reduction = "umap",
+          cells.highlight = which(Eminence.combined.sct@meta.data$cloneID == i),
+          sizes.highlight = 4, pt.size = 0.5,
+          cols.highlight = "royalblue4") +NoLegend()
+  ggsave(file=paste("E16_clones/Clone_",i,".png",sep=""),width=2,height=2,scale=4,dpi=600)
+}
+```
+
