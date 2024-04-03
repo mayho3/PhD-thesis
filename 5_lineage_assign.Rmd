@@ -1,0 +1,119 @@
+---
+title: "Lineage Assign"
+output: html_notebook
+---
+
+
+```{r}
+library(readr)
+library(philentropy)
+library(dendextend)
+```
+
+```{r}
+sparse_matrix <-readr::read_csv("/data/mayerlab/mayho/TrackerSeq_demo/MUC28072_sparse_matrix_UMI6.csv")
+sparse_matrix <- as.data.frame(sparse_matrix)
+head(sparse_matrix)
+```
+
+```{r}
+sparse_matrix$...1 <- NULL
+# duplicate_cellbcs <- sparse_matrix$cellbc[duplicated(sparse_matrix$cellbc)] # comment out if you want to remove duplicates
+# sparse_matrix <- subset(sparse_matrix, !(cellbc %in% duplicate_cellbcs))
+rownames(sparse_matrix) <- sparse_matrix$cellbc
+sparse_matrix$cellbc <- NULL
+```
+
+```{r}
+dist_mat <- philentropy::distance(sparse_matrix, method = 'jaccard', use.row.names = TRUE)
+dist_mat <- as.dist(dist_mat)
+hclust_avg <- hclust(dist_mat, method = 'average')
+```
+
+```{r}
+plot(hclust_avg, hang = -1, cex = 0.1)
+abline(h = 0.999, col = 'red')
+```
+
+```{r}
+cut_avg <- cutree(hclust_avg, h = 0.999) # see section below if this command doesn't execute
+clones <- stack(cut_avg)
+clones <- setNames(stack(cut_avg), c('cloneID', 'cellbc'))
+n_occur <- data.frame(table(clones$cloneID))
+multicc <- n_occur[n_occur$Freq >1,]
+```
+
+```{r}
+# output table of clones
+write.csv(clones, file = "/data/mayerlab/mayho/TrackerSeq_demo/MUC28072_cloneIDs_UMI6.csv")
+```
+
+### Alternative cloneID assignment
+
+```{r}
+hclust_avg$height <- round(hclust_avg$height, 6)
+cut_avg <- cutree(hclust_avg, h = 0.999)
+```
+
+```{r}
+# dataframe of cellbcs and cloneIDs
+clones <- data.frame(
+  cloneID = cut_avg,
+  cellbc = rownames(sparse_matrix)
+)
+head(clones)
+```
+
+```{r}
+# output table of clones
+write.csv(clones, file = "/data/mayerlab/mayho/TrackerSeq_demo/MUC28072_cloneIDs_UMI6.csv")
+```
+
+Merging cloneID table with Seurat metadata
+
+```{r}
+clones$cellbc <- paste("MUC28072_", clones$cellbc, "-1", sep = "")
+```
+
+```{r}
+merge.transcr.ling.may.pB2 <- function(seuratobject, pool,new.col="CloneID", ... ){
+  cells <- intersect(pool$cellbc,colnames(seuratobject))
+  rownames(pool) <- pool$cellbc
+  seuratobject@meta.data[,new.col] <- "No LBC"
+  seuratobject@meta.data[cells,new.col] <- pool[cells, new.col]
+  Idents(object = seuratobject) <- new.col
+  seuratobject@meta.data[WhichCells(seuratobject,idents = "No LBC"),new.col] <- NA
+  return(seuratobject)
+}
+```
+
+```{r}
+MUC28072 <-  merge.transcr.ling.may.pB2(MUC28072, pool = clones, new.col = "cloneID")
+head(MUC28072@meta.data)
+```
+
+### Misc. 
+
+Miscellaneous scripts for certain data processing tasks. 
+
+```{r}
+# extract row order
+rownames(MUC28072_mtx_subset)[hm$rowInd]
+```
+
+```{r}
+# removing duplicate cellbcs
+duplicate_cellbcs <- sparse_matrix$cellbc[duplicated(sparse_matrix$cellbc)]
+sparse_matrix <- subset(sparse_matrix, !(cellbc %in% duplicate_cellbcs))
+```
+
+
+```{r}
+# determining which column & row index have 1
+which(mtx == 1, arr.ind=TRUE)
+```
+
+
+
+
+
